@@ -263,35 +263,64 @@ void *udt_to_handle(void *threadarg) {
 }
 
 
+// Strip rsync-style [brackets] from an IPv6 host if present.
+static void host_without_brackets(const char *in, char *out, size_t outsz) {
+    size_t len = strlen(in);
+    if (len >= 2 && in[0] == '[' && in[len - 1] == ']') {
+	size_t n = len - 2;
+	if (n >= outsz)
+	    n = outsz - 1;
+	memcpy(out, in + 1, n);
+	out[n] = '\0';
+    } else {
+	snprintf(out, outsz, "%s", in);
+    }
+}
+
 int run_sender(UDR_Options * udr_options, unsigned char * passphrase, const char* cmd, int argc, char ** argv) {
     UDT::startup();
-    struct addrinfo hints, *local, *peer;
+    struct addrinfo hints, *peer, *p;
 
     memset(&hints, 0, sizeof(struct addrinfo));
-    hints.ai_flags = AI_PASSIVE;
-    hints.ai_family = AF_INET;
+    // Dual-stack: allow IPv4 and IPv6 peers
+    hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_STREAM;
 
-    if (0 != getaddrinfo(NULL, udr_options->port_num, &hints, &local)) {
-	cerr << "[udr sender] incorrect network address.\n" << endl;
+    char peer_host[PATH_MAX + 1];
+    host_without_brackets(udr_options->host, peer_host, sizeof(peer_host));
+
+    if (0 != getaddrinfo(peer_host, udr_options->port_num, &hints, &peer)) {
+	cerr << "[udr sender] incorrect server/peer address. " << peer_host << ":" << udr_options->port_num << endl;
 	return 1;
     }
 
-    UDTSOCKET client = UDT::socket(local->ai_family, local->ai_socktype, local->ai_protocol);
+    // Try each resolved address (IPv6 and/or IPv4) until connect succeeds
+    UDTSOCKET client = UDT::INVALID_SOCK;
+    for (p = peer; p != NULL; p = p->ai_next) {
+	UDTSOCKET s = UDT::socket(p->ai_family, p->ai_socktype, p->ai_protocol);
+	if (s == UDT::INVALID_SOCK)
+	    continue;
 
-    freeaddrinfo(local);
-
-    if (0 != getaddrinfo(udr_options->host, udr_options->port_num, &hints, &peer)) {
-	cerr << "[udr sender] incorrect server/peer address. " << udr_options->host << ":" << udr_options->port_num << endl;
-	return 1;
-    }
-
-    if (UDT::ERROR == UDT::connect(client, peer->ai_addr, peer->ai_addrlen)) {
-	cerr << "[udr sender] connect: " << UDT::getlasterror().getErrorMessage() << endl;
-	return 1;
+	if (UDT::ERROR == UDT::connect(s, p->ai_addr, p->ai_addrlen)) {
+	    if (udr_options->verbose) {
+		cerr << "[udr sender] connect try failed (" 
+		     << (p->ai_family == AF_INET6 ? "IPv6" : "IPv4") << "): "
+		     << UDT::getlasterror().getErrorMessage() << endl;
+	    }
+	    UDT::close(s);
+	    continue;
+	}
+	client = s;
+	break;
     }
 
     freeaddrinfo(peer);
+
+    if (client == UDT::INVALID_SOCK) {
+	cerr << "[udr sender] connect: could not reach " << peer_host << ":"
+	     << udr_options->port_num << " (" << UDT::getlasterror().getErrorMessage() << ")" << endl;
+	return 1;
+    }
 
     // not using CC method yet
     //CUDPBlast* cchandle = NULL;
@@ -386,8 +415,7 @@ int run_receiver(UDR_Options * udr_options) {
 
     addrinfo hints;
     addrinfo* res;
-
-    struct sockaddr_in my_addr;
+    addrinfo* aip;
 
     // switch to turn on ip specification or not
     int specify_ip = !!(udr_options->specify_ip);
@@ -397,11 +425,13 @@ int run_receiver(UDR_Options * udr_options) {
 
     memset(&hints, 0, sizeof(struct addrinfo));
     hints.ai_flags = AI_PASSIVE;
-    hints.ai_family = AF_INET;
+    // Dual-stack: prefer IPv6 wildcard (::) which often accepts v4-mapped too;
+    // fall back through getaddrinfo results (typically :: then 0.0.0.0).
+    hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_STREAM;
 
     char receiver_port[NI_MAXSERV];
-    UDTSOCKET serv;
+    UDTSOCKET serv = UDT::INVALID_SOCK;
 
     bool bad_port = false;
 
@@ -411,36 +441,106 @@ int run_receiver(UDR_Options * udr_options) {
     }
 
     for(int port_num = udr_options->start_port; port_num <= udr_options->end_port; port_num++) {
-	bad_port = false;
+	bad_port = true;
 	snprintf(receiver_port, sizeof(receiver_port), "%d", port_num);
 
-	if (0 != getaddrinfo(NULL, receiver_port, &hints, &res)) {
-	    bad_port = true;
-	}
-	else {
+	if (specify_ip) {
+	    // Bind to a specific IPv4 or IPv6 address
+	    struct addrinfo sip_hints, *sip_res, *sip;
+	    memset(&sip_hints, 0, sizeof(sip_hints));
+	    sip_hints.ai_family = AF_UNSPEC;
+	    sip_hints.ai_socktype = SOCK_STREAM;
+	    sip_hints.ai_flags = AI_PASSIVE | AI_NUMERICHOST;
 
-	    serv = UDT::socket(res->ai_family, res->ai_socktype, res->ai_protocol);
+	    char ip_buf[PATH_MAX + 1];
+	    host_without_brackets(udr_options->specify_ip, ip_buf, sizeof(ip_buf));
 
-	    int r;
-
-	    if (specify_ip){
-
-		my_addr.sin_family = AF_INET;
-		my_addr.sin_port = htons(port_num);
-		my_addr.sin_addr.s_addr = inet_addr(udr_options->specify_ip);
-		bzero(&(my_addr.sin_zero), 8);
-
-		r = UDT::bind(serv, (struct sockaddr *)&my_addr, sizeof(struct sockaddr));
-	    } else {
-		r = UDT::bind(serv, res->ai_addr, res->ai_addrlen);
+	    if (0 != getaddrinfo(ip_buf, receiver_port, &sip_hints, &sip_res)) {
+		// Retry without AI_NUMERICHOST for hostnames
+		sip_hints.ai_flags = AI_PASSIVE;
+		if (0 != getaddrinfo(ip_buf, receiver_port, &sip_hints, &sip_res)) {
+		    if (udr_options->verbose)
+			fprintf(stderr, "[udr receiver] getaddrinfo(%s) failed\n", ip_buf);
+		    continue;
+		}
 	    }
 
-	    if (UDT::ERROR == r){
-		bad_port = true;
+	    for (sip = sip_res; sip != NULL; sip = sip->ai_next) {
+		UDTSOCKET s = UDT::socket(sip->ai_family, sip->ai_socktype, sip->ai_protocol);
+		if (s == UDT::INVALID_SOCK)
+		    continue;
+
+		if (UDT::ERROR == UDT::bind(s, sip->ai_addr, sip->ai_addrlen)) {
+		    UDT::close(s);
+		    continue;
+		}
+		serv = s;
+		bad_port = false;
+		break;
+	    }
+	    freeaddrinfo(sip_res);
+	} else {
+	    // Prefer dual-stack IPv6 (::) so both IPv4-mapped and IPv6 clients work.
+	    // Fall back to plain IPv6, then IPv4.
+	    int udpsock = socket(AF_INET6, SOCK_DGRAM, 0);
+	    if (udpsock >= 0) {
+		int off = 0;
+		// Best-effort dual-stack; ignore failure (some OSes disallow it)
+		(void)setsockopt(udpsock, IPPROTO_IPV6, IPV6_V6ONLY, (char *)&off, sizeof(off));
+
+		struct sockaddr_in6 addr6;
+		memset(&addr6, 0, sizeof(addr6));
+		addr6.sin6_family = AF_INET6;
+		addr6.sin6_port = htons((uint16_t)port_num);
+		addr6.sin6_addr = in6addr_any;
+
+		if (0 == ::bind(udpsock, (struct sockaddr *)&addr6, sizeof(addr6))) {
+		    UDTSOCKET s = UDT::socket(AF_INET6, SOCK_STREAM, 0);
+		    if (s != UDT::INVALID_SOCK &&
+			UDT::ERROR != UDT::bind(s, udpsock)) {
+			serv = s;
+			bad_port = false;
+			// udpsock is now owned by UDT; do not close it
+			udpsock = -1;
+			if (udr_options->verbose)
+			    fprintf(stderr, "[udr receiver] bound dual-stack IPv6 port %s\n", receiver_port);
+		    } else {
+			if (s != UDT::INVALID_SOCK)
+			    UDT::close(s);
+		    }
+		}
+		if (udpsock >= 0)
+		    close(udpsock);
+	    }
+
+	    // Fallback: getaddrinfo wildcard addresses (IPv6 then IPv4)
+	    if (bad_port && 0 == getaddrinfo(NULL, receiver_port, &hints, &res)) {
+		for (aip = res; aip != NULL; aip = aip->ai_next) {
+		    UDTSOCKET s = UDT::socket(aip->ai_family, aip->ai_socktype, aip->ai_protocol);
+		    if (s == UDT::INVALID_SOCK)
+			continue;
+
+		    if (UDT::ERROR == UDT::bind(s, aip->ai_addr, aip->ai_addrlen)) {
+			if (udr_options->verbose) {
+			    fprintf(stderr, "[udr receiver] bind %s port %s failed: %s\n",
+				    aip->ai_family == AF_INET6 ? "IPv6" : "IPv4",
+				    receiver_port, UDT::getlasterror().getErrorMessage());
+			}
+			UDT::close(s);
+			continue;
+		    }
+		    serv = s;
+		    bad_port = false;
+		    if (udr_options->verbose) {
+			fprintf(stderr, "[udr receiver] bound %s port %s\n",
+				aip->ai_family == AF_INET6 ? "IPv6" : "IPv4",
+				receiver_port);
+		    }
+		    break;
+		}
+		freeaddrinfo(res);
 	    }
 	}
-
-	freeaddrinfo(res);
 
 	if(!bad_port)
 	    break;

@@ -147,7 +147,21 @@ int main(int argc, char* argv[]) {
             passphrase[i / 2] = '\0';
         }
 
-        snprintf(curr_options.host, PATH_MAX, "%s", argv[rsync_arg_idx - 1]);
+        // rsync may pass the peer as a bare hostname, IPv4, IPv6, or [IPv6]
+        {
+            const char *raw_host = argv[rsync_arg_idx - 1];
+            size_t hlen = strlen(raw_host);
+            if (hlen >= 2 && raw_host[0] == '[' && raw_host[hlen - 1] == ']') {
+                // Strip brackets so getaddrinfo/UDT see a plain IPv6 literal
+                size_t n = hlen - 2;
+                if (n > PATH_MAX)
+                    n = PATH_MAX;
+                memcpy(curr_options.host, raw_host + 1, n);
+                curr_options.host[n] = '\0';
+            } else {
+                snprintf(curr_options.host, PATH_MAX, "%s", raw_host);
+            }
+        }
 
         if (curr_options.verbose)
             fprintf(stderr, "%s Host: %s\n", curr_options.which_process, curr_options.host);

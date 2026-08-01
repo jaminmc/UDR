@@ -219,51 +219,109 @@ int get_udr_options(UDR_Options * udr_options, int argc, char * argv[], int rsyn
     return 1;
 }
 
-void parse_host_username(char* source, char* username, char* host, bool* double_colon){
-    char * colon_loc = strchr(source, ':');
-    char * at_loc = strchr(source, '@');
-    int host_len = 0;
-    int username_len = 0;
+// Normalize host for SSH/getaddrinfo: strip surrounding [ ] used in rsync IPv6 syntax.
+static void copy_host_normalized(char* dest, const char* src, size_t len) {
+    if (len > PATH_MAX)
+        len = PATH_MAX;
 
-    if (colon_loc == NULL){
+    if (len >= 2 && src[0] == '[' && src[len - 1] == ']') {
+        // Bracketed IPv6 literal: store without brackets
+        size_t inner = len - 2;
+        if (inner > PATH_MAX)
+            inner = PATH_MAX;
+        memcpy(dest, src + 1, inner);
+        dest[inner] = '\0';
+    } else {
+        memcpy(dest, src, len);
+        dest[len] = '\0';
+    }
+}
+
+void parse_host_username(char* source, char* username, char* host, bool* double_colon){
+    // rsync IPv6 forms:
+    //   user@[2001:db8::1]:/path
+    //   [2001:db8::1]:/path
+    //   user@[2001:db8::1]::module
+    // classic forms:
+    //   user@host:/path
+    //   host:/path
+    //   user@host::module
+    char * at_loc = strchr(source, '@');
+    char * bracket_open = strchr(source, '[');
+    char * bracket_close = bracket_open ? strchr(bracket_open, ']') : NULL;
+
+    username[0] = '\0';
+    host[0] = '\0';
+    *double_colon = false;
+
+    if (bracket_open && bracket_close && bracket_close > bracket_open) {
+        // Host is the IPv6 literal inside [ ]
+        // Optional username must appear before '[' (user@[...])
+        if (at_loc != NULL && at_loc < bracket_open) {
+            size_t username_len = (size_t)(at_loc - source);
+            if (username_len > PATH_MAX) {
+                fprintf(stderr, "UDR ERROR: username_len > PATH_MAX\n");
+                exit(1);
+            }
+            memcpy(username, source, username_len);
+            username[username_len] = '\0';
+        } else if (at_loc != NULL && at_loc > bracket_close) {
+            // Invalid placement of @
+            return;
+        }
+
+        size_t host_len = (size_t)(bracket_close - bracket_open - 1);
+        if (host_len == 0 || host_len > PATH_MAX) {
+            fprintf(stderr, "UDR ERROR: invalid IPv6 host length\n");
+            exit(1);
+        }
+        memcpy(host, bracket_open + 1, host_len);
+        host[host_len] = '\0';
+
+        // Path / module separator is after ']'
+        if (bracket_close[1] == ':') {
+            if (bracket_close[2] == ':')
+                *double_colon = true;
+        } else {
+            // No ':' after brackets → not a remote rsync path form we handle
+            host[0] = '\0';
+            username[0] = '\0';
+        }
         return;
     }
 
-    if (colon_loc[1] == ':'){
+    // Non-bracketed: first ':' separates host from path (hostnames / IPv4 only)
+    char * colon_loc = strchr(source, ':');
+    if (colon_loc == NULL) {
+        return;
+    }
+
+    if (colon_loc[1] == ':') {
         *double_colon = true;
     }
 
-    // probably should check lengths here?
-    if (at_loc != NULL){
-        host_len = colon_loc - at_loc;
+    if (at_loc != NULL && at_loc < colon_loc) {
+        size_t host_len = (size_t)(colon_loc - at_loc - 1);
+        size_t username_len = (size_t)(at_loc - source);
 
         if (host_len > PATH_MAX) {
-            fprintf(stderr, "UDR ERROR: host_len > PATH_MAX");
+            fprintf(stderr, "UDR ERROR: host_len > PATH_MAX\n");
             exit(1);
         }
-
-        strncpy(host, at_loc+1, host_len-1);
-        host[host_len-1] = '\0';
-
-        username_len = at_loc - source + 1;
-
         if (username_len > PATH_MAX) {
-            fprintf(stderr, "UDR ERROR: username_len > PATH_MAX");
+            fprintf(stderr, "UDR ERROR: username_len > PATH_MAX\n");
             exit(1);
         }
 
-        strncpy(username, source, username_len-1);
-        username[username_len-1] = '\0';
-    }
-    else{
-        host_len = colon_loc - source + 1;
-        if(host_len > PATH_MAX)
+        copy_host_normalized(host, at_loc + 1, host_len);
+        memcpy(username, source, username_len);
+        username[username_len] = '\0';
+    } else {
+        size_t host_len = (size_t)(colon_loc - source);
+        if (host_len > PATH_MAX)
             host_len = PATH_MAX;
-
-        strncpy(host, source, host_len-1);
-        host[host_len-1] = '\0';
+        copy_host_normalized(host, source, host_len);
     }
-
 }
 
 //Gets the host and username by parsing the rsync options

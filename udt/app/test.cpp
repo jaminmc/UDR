@@ -92,7 +92,8 @@ int createTCPSocket(SYSSOCKET& ssock, int port = 0, bool rendezvous = false)
 
    ssock = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
 
-   if (bind(ssock, res->ai_addr, res->ai_addrlen) != 0)
+   // ::bind: disambiguate from std::bind (pulled in via libc++ on modern macOS)
+   if (::bind(ssock, res->ai_addr, res->ai_addrlen) != 0)
    {
       return -1;
    }

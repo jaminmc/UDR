@@ -1,7 +1,12 @@
 C++ = g++ -g
 
 ifndef os
-   os = LINUX
+   UNAME_S := $(shell uname -s)
+   ifeq ($(UNAME_S),Darwin)
+      os = OSX
+   else
+      os = LINUX
+   endif
 endif
 
 ifndef arch

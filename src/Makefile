@@ -1,7 +1,12 @@
 C++ = g++
 
 ifndef os
-   os = LINUX
+   UNAME_S := $(shell uname -s)
+   ifeq ($(UNAME_S),Darwin)
+      os = OSX
+   else
+      os = LINUX
+   endif
 endif
 
 ifndef arch
@@ -33,8 +38,15 @@ ifeq ($(os), UNIX)
 endif
 
 ifeq ($(os), OSX)
-   LDFLAGS += -I/usr/local/opt/openssl/include -L/usr/local/opt/openssl/lib
-   CCFLAGS += -I/usr/local/opt/openssl/include
+   # Prefer Apple Silicon Homebrew, then Intel Homebrew
+   OPENSSL_PREFIX ?= $(shell \
+     if [ -d /opt/homebrew/opt/openssl ]; then echo /opt/homebrew/opt/openssl; \
+     elif [ -d /usr/local/opt/openssl ]; then echo /usr/local/opt/openssl; \
+     fi)
+   ifneq ($(OPENSSL_PREFIX),)
+      LDFLAGS += -L$(OPENSSL_PREFIX)/lib
+      CCFLAGS += -I$(OPENSSL_PREFIX)/include
+   endif
 endif
 
 ifeq ($(os), SUNOS)
