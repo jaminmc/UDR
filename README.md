@@ -68,6 +68,24 @@ The binary is written to `src/udr`. Check the build with:
 # UDR version v0.9.5
 ```
 
+### Install
+
+Works on **Linux, macOS, and BSD** (uses portable `install -d` / `install -m`):
+
+```bash
+sudo make install                 # → /usr/local/bin/udr
+sudo make install PREFIX=/usr     # → /usr/bin/udr
+make install DESTDIR=/tmp/stage   # staged install (packaging)
+```
+
+On **macOS only**, `make` and `make install` also ad-hoc `codesign` the binary. Do **not** use bare `sudo cp src/udr /usr/local/bin/` without re-signing — an invalid signature makes the kernel kill the process (`zsh: killed`). If that happens:
+
+```bash
+sudo codesign --force -s - /usr/local/bin/udr
+```
+
+On Linux/BSD, no code signing step is required.
+
 USAGE
 -----
 

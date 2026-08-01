@@ -105,8 +105,10 @@ int main(int argc, char* argv[]) {
 
     get_udr_options(&curr_options, argc, argv, rsync_arg_idx);
 
-    if (curr_options.version_flag)
+    if (curr_options.version_flag) {
         print_version();
+        return 0;
+    }
 
     if (!use_rsync)
         usage();

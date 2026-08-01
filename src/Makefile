@@ -54,6 +54,7 @@ ifeq ($(os), SUNOS)
 endif
 
 DIR = $(shell pwd)
+PREFIX ?= /usr/local
 
 APP = version.h udr
 
@@ -67,9 +68,28 @@ version.h:
 
 udr: udr.o udr_threads.o udr_util.o udr_options.o udr_mtu.o
 	$(C++) $^ -o $@ $(LDFLAGS)
+ifeq ($(os), OSX)
+	# Ad-hoc sign so the binary runs after install/copy (macOS kills
+	# unsigned/invalid-signature binaries with "zsh: killed").
+	codesign --force -s - $@
+endif
 
 clean:
 	rm -f *.o $(APP)
 
-install:
-	export PATH=$(DIR):$$PATH
+# Portable install: GNU coreutils (Linux) and BSD install(1) both support
+# `install -d` and `install -m`. codesign is Darwin-only.
+#   make install
+#   make install PREFIX=/usr
+#   make install DESTDIR=/tmp/stage PREFIX=/usr
+install: udr
+	install -d $(DESTDIR)$(PREFIX)/bin
+	install -m 755 udr $(DESTDIR)$(PREFIX)/bin/udr
+ifeq ($(os), OSX)
+	codesign --force -s - $(DESTDIR)$(PREFIX)/bin/udr
+	@echo "Installed $(DESTDIR)$(PREFIX)/bin/udr (ad-hoc signed)"
+	@echo "If you copy the binary by hand on macOS, re-sign with:"
+	@echo "  codesign --force -s - $(DESTDIR)$(PREFIX)/bin/udr"
+else
+	@echo "Installed $(DESTDIR)$(PREFIX)/bin/udr"
+endif
