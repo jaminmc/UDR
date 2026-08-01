@@ -1,17 +1,28 @@
 UDR
 ===
 
-[![GitHub](https://img.shields.io/badge/github-jaminmc%2FUDR-blue)](https://github.com/jaminmc/UDR)
+**Version 0.9.5** · [![GitHub](https://img.shields.io/badge/github-jaminmc%2FUDR-blue)](https://github.com/jaminmc/UDR)
 
 UDR is a wrapper around rsync that enables rsync to use [UDT](https://en.wikipedia.org/wiki/UDP-based_Data_Transfer_Protocol) for high-throughput transfers over high-latency networks.
 
-This repository is a maintained fork of [martinetd/UDR](https://github.com/martinetd/UDR) (itself forked from [LabAdvComp/UDR](https://github.com/LabAdvComp/UDR)), with fixes for modern macOS (including Apple Silicon), OpenSSL via Homebrew, and IPv6.
+This repository is a maintained fork of [martinetd/UDR](https://github.com/martinetd/UDR) (itself forked from [LabAdvComp/UDR](https://github.com/LabAdvComp/UDR)), with fixes for modern macOS (including Apple Silicon), OpenSSL via Homebrew, IPv6, and automatic path MTU / packet sizing.
 
 > **Note:** For many long-distance TCP paths, enabling BBR congestion control may be enough and simpler than UDR:
 > ```
 > sysctl net.ipv4.tcp_congestion_control=bbr
 > ```
 > Use UDR when you specifically need UDT-based rsync over UDP.
+
+WHAT'S NEW IN 0.9.5
+-------------------
+
+- **IPv6** — rsync-style hosts (`user@[2001:db8::1]:/path`), dual-stack UDT sockets
+- **Path MTU autodetection** — sets `UDT_MSS` from the route (IPv4 vs IPv6 header-aware)
+- **WAN jumbo safety** — local jumbo-frame NICs no longer inflate packet size for internet peers (capped at 1500 off-link)
+- **macOS / Apple Silicon** — auto `os=OSX`, Homebrew OpenSSL (`/opt/homebrew` or `/usr/local`)
+- **Build fixes** — modern libc++ `::bind` fix for UDT test apps
+
+See [CHANGELOG.md](CHANGELOG.md) for the full list.
 
 CONTENT
 -------
@@ -50,7 +61,12 @@ make -e os=XXX arch=YYY
 | `os`     | `LINUX` (default on non-Darwin), `BSD`, `OSX` |
 | `arch`   | `AMD64` (default), `POWERPC`, `IA64`, `IA32` |
 
-The binary is written to `src/udr`.
+The binary is written to `src/udr`. Check the build with:
+
+```bash
+./src/udr --version
+# UDR version v0.9.5
+```
 
 USAGE
 -----
@@ -71,7 +87,7 @@ udr [udr options] rsync [rsync options] src dest
 - `[-p path]` local path for the `.udr_key` file used for encryption (default: current directory)
 - `[-c remote udr location]` path to `udr` on the remote host (default: `udr` on `PATH`)
 - `[-o server port]` port for UDR server mode (default 9000)
-- `[-v]` verbose mode
+- `[-v]` verbose mode (includes MTU discovery logs)
 - `[--version]` print version
 - `[-d timeout]` idle timeout in seconds after connect with no data (default 15)
 - `[-i ip]` interface address the remote process binds to (IPv4 or IPv6)
@@ -94,18 +110,29 @@ udr -c /home/user/udr/src/udr -a 8000 -b 8010 rsync -av --stats --progress \
   /home/user/tmp/ hostname.com:/home/user/tmp
 ```
 
-**IPv6** (rsync-style bracket notation; host must run this fork of `udr`):
+**IPv6** (rsync-style bracket notation; **both ends need UDR ≥ 0.9.5**):
 
 ```bash
 udr -v rsync -av --progress /local/path/ \
   'user@[2001:db8::1]:/remote/path/'
 ```
 
+### Path MTU / packet size
+
+UDR probes the path and sets `UDT_MSS` automatically before connecting:
+
+- Converts path MTU → UDT MSS correctly for **IPv4 vs IPv6** (stock UDT `1500` assumes IPv4 headers; IPv6 needs a lower MSS on a 1500 MTU path, typically **1472**)
+- **Internet / off-link peers are capped at 1500** even if your NIC has jumbo frames enabled — local jumbo does not exist on typical WAN paths
+- Jumbo (&gt;1500) is only considered for on-link peers (same subnet, link-local, or loopback)
+- DF-bit probes and OS hints can still *lower* MTU (PPPoE, tunnels, etc.)
+- Handshake uses the minimum MSS of both peers
+- With `-v`, logs include `jumbo=no(wan-cap-1500)` for internet destinations
+
 ### Notes
 
 - After the transfer finishes, the local UDR thread is stopped by a signal. Rsync may print  
   `rsync error: sibling process terminated abnormally` — that message can be ignored if the transfer completed. Other rsync errors are real failures.
-- Both ends must use a compatible `udr` binary (especially for IPv6).
+- Both ends must use a compatible `udr` binary (especially for IPv6 and MTU-aware MSS). Prefer **0.9.5+ on both sides**.
 
 UDR SERVER
 ----------
@@ -166,6 +193,6 @@ HISTORY / LICENSE
 
 - Original project: [LabAdvComp/UDR](https://github.com/LabAdvComp/UDR)
 - Intermediate fork (OpenSSL fixes): [martinetd/UDR](https://github.com/martinetd/UDR)
-- This fork: [jaminmc/UDR](https://github.com/jaminmc/UDR) — macOS/Apple Silicon build, Homebrew OpenSSL paths, IPv6
+- This fork: [jaminmc/UDR](https://github.com/jaminmc/UDR) — v0.9.5: macOS/Apple Silicon, Homebrew OpenSSL, IPv6, path MTU autodetection
 
 See `LICENSE.txt` and `udt/LICENSE.txt`.

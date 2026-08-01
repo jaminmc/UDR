@@ -27,6 +27,7 @@ and limitations under the License.
 #include <glob.h>
 #include <udt.h>
 #include "udr_util.h"
+#include "udr_mtu.h"
 #include "udr_threads.h"
 
 #include <arpa/inet.h>
@@ -294,12 +295,17 @@ int run_sender(UDR_Options * udr_options, unsigned char * passphrase, const char
 	return 1;
     }
 
-    // Try each resolved address (IPv6 and/or IPv4) until connect succeeds
+    // Try each resolved address (IPv6 and/or IPv4) until connect succeeds.
+    // Before each connect, probe path MTU and set UDT_MSS (IPv6 needs a lower
+    // MSS than 1500 because UDT always subtracts IPv4-sized headers).
     UDTSOCKET client = UDT::INVALID_SOCK;
     for (p = peer; p != NULL; p = p->ai_next) {
 	UDTSOCKET s = UDT::socket(p->ai_family, p->ai_socktype, p->ai_protocol);
 	if (s == UDT::INVALID_SOCK)
 	    continue;
+
+	(void)apply_udt_mss_for_peer(s, p->ai_addr, p->ai_addrlen,
+				     udr_options->verbose ? 1 : 0);
 
 	if (UDT::ERROR == UDT::connect(s, p->ai_addr, p->ai_addrlen)) {
 	    if (udr_options->verbose) {
@@ -470,6 +476,9 @@ int run_receiver(UDR_Options * udr_options) {
 		if (s == UDT::INVALID_SOCK)
 		    continue;
 
+		(void)apply_udt_mss_for_listener(s, sip->ai_family, ip_buf,
+						 udr_options->verbose ? 1 : 0);
+
 		if (UDT::ERROR == UDT::bind(s, sip->ai_addr, sip->ai_addrlen)) {
 		    UDT::close(s);
 		    continue;
@@ -496,17 +505,19 @@ int run_receiver(UDR_Options * udr_options) {
 
 		if (0 == ::bind(udpsock, (struct sockaddr *)&addr6, sizeof(addr6))) {
 		    UDTSOCKET s = UDT::socket(AF_INET6, SOCK_STREAM, 0);
-		    if (s != UDT::INVALID_SOCK &&
-			UDT::ERROR != UDT::bind(s, udpsock)) {
-			serv = s;
-			bad_port = false;
-			// udpsock is now owned by UDT; do not close it
-			udpsock = -1;
-			if (udr_options->verbose)
-			    fprintf(stderr, "[udr receiver] bound dual-stack IPv6 port %s\n", receiver_port);
-		    } else {
-			if (s != UDT::INVALID_SOCK)
+		    if (s != UDT::INVALID_SOCK) {
+			(void)apply_udt_mss_for_listener(s, AF_INET6, NULL,
+							 udr_options->verbose ? 1 : 0);
+			if (UDT::ERROR != UDT::bind(s, udpsock)) {
+			    serv = s;
+			    bad_port = false;
+			    // udpsock is now owned by UDT; do not close it
+			    udpsock = -1;
+			    if (udr_options->verbose)
+				fprintf(stderr, "[udr receiver] bound dual-stack IPv6 port %s\n", receiver_port);
+			} else {
 			    UDT::close(s);
+			}
 		    }
 		}
 		if (udpsock >= 0)
@@ -519,6 +530,9 @@ int run_receiver(UDR_Options * udr_options) {
 		    UDTSOCKET s = UDT::socket(aip->ai_family, aip->ai_socktype, aip->ai_protocol);
 		    if (s == UDT::INVALID_SOCK)
 			continue;
+
+		    (void)apply_udt_mss_for_listener(s, aip->ai_family, NULL,
+						     udr_options->verbose ? 1 : 0);
 
 		    if (UDT::ERROR == UDT::bind(s, aip->ai_addr, aip->ai_addrlen)) {
 			if (udr_options->verbose) {
