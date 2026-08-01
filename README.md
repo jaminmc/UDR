@@ -7,12 +7,6 @@ UDR is a wrapper around rsync that enables rsync to use [UDT](https://en.wikiped
 
 This repository is a maintained fork of [martinetd/UDR](https://github.com/martinetd/UDR) (itself forked from [LabAdvComp/UDR](https://github.com/LabAdvComp/UDR)), with fixes for modern macOS (including Apple Silicon), OpenSSL via Homebrew, IPv6, and automatic path MTU / packet sizing.
 
-> **Note:** For many long-distance TCP paths, enabling BBR congestion control may be enough and simpler than UDR:
-> ```
-> sysctl net.ipv4.tcp_congestion_control=bbr
-> ```
-> Use UDR when you specifically need UDT-based rsync over UDP.
-
 WHAT'S NEW IN 0.9.5
 -------------------
 
