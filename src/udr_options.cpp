@@ -32,7 +32,8 @@ using namespace std;
 void usage() {
     fprintf(stderr, "usage: udr [UDR options] rsync [rsync options]\n\n");
     fprintf(stderr, "UDR options:\n");
-    fprintf(stderr, "\t[-n aes-128 | aes-192 | aes-256 | bf | des-ede3] Encryption cypher\n");
+    fprintf(stderr, "\t[-n aes-128 | aes-192 | aes-256 | bf | des-ede3] Encryption cipher (default: aes-256)\n");
+    fprintf(stderr, "\t[--no-encrypt] Disable data-plane encryption\n");
     fprintf(stderr, "\t[-v] Run UDR with verbosity\n");
     fprintf(stderr, "\t[-d timeout] Idle timeout seconds with no pipe data (default 600; 0=disable)\n");
     fprintf(stderr, "\t[-a port] Local UDT port\n");
@@ -76,7 +77,9 @@ void set_default_udr_options(UDR_Options * options) {
     options->tflag = false;
     options->sflag = false;
     options->verbose = false;
-    options->encryption = false;
+    // Encrypt UDT data by default (AES-256-CTR via OpenSSL; AES-NI/ARMv8 when available)
+    options->encryption = true;
+    snprintf(options->encryption_type, PATH_MAX, "%s", "aes-256");
     options->version_flag = false;
     options->server_connect = false;
 
@@ -125,6 +128,7 @@ int get_udr_options(UDR_Options * udr_options, int argc, char * argv[], int rsyn
         {"receiver", no_argument, NULL, 't'},
         {"server", required_argument, NULL, 'd'},
         {"encrypt", optional_argument, NULL, 'n'},
+        {"no-encrypt", no_argument, NULL, 0},
         {"sender", no_argument, NULL, 's'},
         {"login-name", required_argument, NULL, 'l'},
         {"keyfile", required_argument, NULL, 'p'},
@@ -162,11 +166,16 @@ int get_udr_options(UDR_Options * udr_options, int argc, char * argv[], int rsyn
             udr_options->tflag = 1;
             break;
         case 'n':
-            udr_options->encryption = true;
-            if (optarg) {
-            	snprintf(udr_options->encryption_type, PATH_MAX, "%s", optarg);
+            // Explicit cipher selection (encryption is on by default)
+            if (optarg && (strcmp(optarg, "none") == 0 || strcmp(optarg, "off") == 0)) {
+                udr_options->encryption = false;
             } else {
-                snprintf(udr_options->encryption_type, PATH_MAX, "%s", "aes-128");
+                udr_options->encryption = true;
+                if (optarg) {
+                    snprintf(udr_options->encryption_type, PATH_MAX, "%s", optarg);
+                } else {
+                    snprintf(udr_options->encryption_type, PATH_MAX, "%s", "aes-256");
+                }
             }
             break;
         case 's':
@@ -234,6 +243,9 @@ int get_udr_options(UDR_Options * udr_options, int argc, char * argv[], int rsyn
                     exit(1);
                 }
             }
+            else if (strcmp("no-encrypt", long_options[option_index].name) == 0) {
+                udr_options->encryption = false;
+            }
             break;
         default:
             fprintf(stderr, "Illegal argument: %c\n", ch);
@@ -263,7 +275,10 @@ int get_udr_options(UDR_Options * udr_options, int argc, char * argv[], int rsyn
         else
             snprintf(udr_options->which_process, PATH_MAX, "%s", "[udr original]");
 
-        fprintf(stderr, "%s Local program: %s Remote program: %s Encryption: %d\n", udr_options->which_process, udr_options->udr_program_src, udr_options->udr_program_dest, udr_options->encryption);
+        fprintf(stderr, "%s Local program: %s Remote program: %s Encryption: %s\n",
+                udr_options->which_process, udr_options->udr_program_src,
+                udr_options->udr_program_dest,
+                udr_options->encryption ? udr_options->encryption_type : "off");
     }
 
     //check that -e/--rsh flag has not been used with rsync

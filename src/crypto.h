@@ -30,11 +30,19 @@ and limitations under the License.
 #include <openssl/evp.h>
 #include <openssl/rand.h>
 #include <openssl/err.h>
+#include <openssl/opensslv.h>
+#include <openssl/crypto.h>
 #include <limits.h>
 #include <iostream>
 //#include "udr_log.h"
 
 using namespace std;
+
+// AES-CTR is preferred: stream-friendly and uses CPU AES (AES-NI / ARMv8 CE)
+// through OpenSSL's default EVP implementation when available.
+#if !defined(OPENSSL_HAS_CTR) && (OPENSSL_VERSION_NUMBER >= 0x10001000L)
+#define OPENSSL_HAS_CTR 1
+#endif
 
 class crypto
 {
@@ -49,6 +57,21 @@ class crypto
     // EVP stuff
     EVP_CIPHER_CTX *ctx;
 
+    static void ensure_openssl_init()
+    {
+        static int once = 0;
+        if (once)
+            return;
+        once = 1;
+#if OPENSSL_VERSION_NUMBER >= 0x10100000L
+        // Load default provider/algorithms; AES-NI / ARMv8 CE used automatically
+        OPENSSL_init_crypto(OPENSSL_INIT_LOAD_CRYPTO_STRINGS |
+                            OPENSSL_INIT_ADD_ALL_CIPHERS, NULL);
+#else
+        OpenSSL_add_all_algorithms();
+#endif
+    }
+
     public:
 
     crypto(int direc, int len, unsigned char* password, char *encryption_type)
@@ -56,12 +79,10 @@ class crypto
         //free_key( password ); can't free here because is reused by threads
         const EVP_CIPHER *cipher;
 
-        //aes-128|aes-256|bf|des-ede3
-        //log_set_maximum_verbosity(LOG_DEBUG);
-        //log_print(LOG_DEBUG, "encryption type %s\n", encryption_type);
+        ensure_openssl_init();
 
+        //aes-128|aes-192|aes-256|bf|des-ede3
         if (strncmp("aes-128", encryption_type, 8) == 0) {
-            //log_print(LOG_DEBUG, "using aes-128 encryption\n");
 #ifdef OPENSSL_HAS_CTR
             if (CTR_MODE)
                 cipher = EVP_aes_128_ctr();
@@ -70,7 +91,6 @@ class crypto
                 cipher = EVP_aes_128_cfb();
         }
         else if (strncmp("aes-192", encryption_type, 8) == 0) {
-            //log_print(LOG_DEBUG, "using aes-192 encryption\n");
 #ifdef OPENSSL_HAS_CTR
             if (CTR_MODE)
                 cipher = EVP_aes_192_ctr();
@@ -79,9 +99,9 @@ class crypto
                 cipher = EVP_aes_192_cfb();
         }
         else if (strncmp("aes-256", encryption_type, 8) == 0) {
-            //log_print(LOG_DEBUG, "using aes-256 encryption\n");
 #ifdef OPENSSL_HAS_CTR
             if (CTR_MODE)
+                // OpenSSL dispatches to AES-NI (x86) or ARMv8 CE when present
                 cipher = EVP_aes_256_ctr();
             else
 #endif
@@ -90,11 +110,9 @@ class crypto
         else if (strncmp("des-ede3", encryption_type, 9) == 0) {
             // apparently there is no 3des nor bf ctr
             cipher = EVP_des_ede3_cfb();
-            //log_print(LOG_DEBUG, "using des-ede3 encryption\n");
         }
         else if (strncmp("bf", encryption_type, 3) == 0) {
             cipher = EVP_bf_cfb();
-            //log_print(LOG_DEBUG, "using blowfish encryption\n");
         }
         else {
             fprintf(stderr, "error unsupported encryption type %s\n",
@@ -105,8 +123,12 @@ class crypto
         memset(ivec, 0, 1024);
 
         direction = direc;
-        // EVP stuff
+        // EVP stuff — NULL impl uses OpenSSL default (hardware-accelerated AES)
         ctx = EVP_CIPHER_CTX_new();
+        if (!ctx) {
+            fprintf(stderr, "error allocating cipher context\n");
+            exit(EXIT_FAILURE);
+        }
 
         if (!EVP_CipherInit_ex(ctx, cipher, NULL, password, ivec, direc)) {
             fprintf(stderr, "error setting encryption scheme\n");

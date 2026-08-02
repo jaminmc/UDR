@@ -13,7 +13,8 @@ ifndef arch
    arch = AMD64
 endif
 
-CCFLAGS = -Wall -D$(os) -I../udt/src -finline-functions -g
+# OPENSSL_HAS_CTR: use AES-CTR (AES-NI / ARMv8 CE accelerated via OpenSSL EVP)
+CCFLAGS = -Wall -D$(os) -DOPENSSL_HAS_CTR -I../udt/src -finline-functions -g
 
 ifeq ($(arch), IA32)
    CCFLAGS += -DIA32 #-mcpu=pentiumpro -march=pentiumpro -mmmx -msse

@@ -83,7 +83,9 @@ On Linux/BSD, no code signing step is required.
 USAGE
 -----
 
-UDR must be installed on **both** the client and server. It uses SSH for authentication and to start the remote UDR process. At least one UDP port must be open between the hosts (default range 9000–9100). Encryption is off by default; when enabled it uses OpenSSL (aes-128 by default).
+UDR must be installed on **both** the client and server. It uses SSH for authentication and to start the remote UDR process. At least one UDP port must be open between the hosts (default range 9000–9100).
+
+**Data-plane encryption is on by default** using **AES-256-CTR** via OpenSSL. Modern OpenSSL uses CPU AES acceleration automatically (**AES-NI** on x86_64, **ARMv8 Crypto Extensions** on Apple Silicon and other ARM64). Disable with `--no-encrypt` if you need raw throughput on a trusted path.
 
 ### Basic usage
 
@@ -95,7 +97,8 @@ udr [udr options] rsync [rsync options] src dest
 
 - `[-a starting port number]` default is 9000
 - `[-b ending port number]` default is 9100
-- `[-n aes-128 | aes-192 | aes-256 | bf | des-ede3]` enable encryption (default cipher aes-128 if `-n` has no argument)
+- `[-n aes-128 | aes-192 | aes-256 | bf | des-ede3]` data cipher (**default aes-256**; `-n none` disables)
+- `[--no-encrypt]` disable UDT data encryption
 - `[-p path]` local path for the `.udr_key` file used for encryption (default: current directory)
 - `[-c remote udr location]` path to `udr` on the remote host (default: `udr` on `PATH`)
 - `[-o server port]` port for UDR server mode (default 9000)
