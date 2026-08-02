@@ -234,4 +234,6 @@ HISTORY / LICENSE
 - Intermediate fork (OpenSSL fixes): [martinetd/UDR](https://github.com/martinetd/UDR)
 - This fork: [jaminmc/UDR](https://github.com/jaminmc/UDR) — v0.9.5: macOS/Apple Silicon, Homebrew OpenSSL, IPv6, path MTU autodetection
 
-See `LICENSE.txt` and `udt/LICENSE.txt`.
+**License: GNU GPLv3** (or later) — see `LICENSE.txt` and `COPYING`.
+
+This fork is distributed under the GPL (copyleft). The embedded **UDT** tree remains **BSD** (`udt/LICENSE.txt`), which is compatible with GPLv3.
