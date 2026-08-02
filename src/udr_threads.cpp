@@ -148,16 +148,24 @@ void *handle_to_udt(void *threadarg) {
     signal(SIGUSR1,sigexit);
 
     struct thread_data *my_args = (struct thread_data *) threadarg;
-    char indata[max_block_size];
-    char outdata[max_block_size];
-    FILE*  logfile;
+    // Heap buffers: 2 x 256KiB on the stack exceeds default pthread stack (512KiB
+    // on macOS) once OpenSSL is in the call chain → corruption / rsync "unexpected tag".
+    char *indata = (char *)malloc(max_block_size);
+    char *outdata = (char *)malloc(max_block_size);
+    FILE*  logfile = NULL;
+
+    if (!indata || !outdata) {
+	fprintf(stderr, "[udr] out of memory for transfer buffers\n");
+	free(indata);
+	free(outdata);
+	my_args->is_complete = true;
+	return NULL;
+    }
 
     if(my_args->log) {
 	string filename = my_args->logfile_dir + convert_int(my_args->id) + "_log.txt";
 	logfile = fopen(filename.c_str(), "w");
     }
-    //struct timeval tv;
-    //fd_set readfds;
     int bytes_read;
     while(true) {
 	int ss;
@@ -174,14 +182,14 @@ void *handle_to_udt(void *threadarg) {
 
 	timeout_sem = 1;
 
-
-
 	if(bytes_read < 0){
 	    if(my_args->log){
 		fprintf(logfile, "Error: bytes_read %d %s\n", bytes_read, strerror(errno));
 		fclose(logfile);
 	    }
 	    my_args->is_complete = true;
+	    free(indata);
+	    free(outdata);
 	    return NULL;
 	}
 	if(bytes_read == 0) {
@@ -190,27 +198,31 @@ void *handle_to_udt(void *threadarg) {
 		fclose(logfile);
 	    }
 	    my_args->is_complete = true;
+	    free(indata);
+	    free(outdata);
 	    return NULL;
 	}
 
+	int to_send = bytes_read;
 	if(my_args->crypt != NULL)
-	    my_args->crypt->encrypt(indata, outdata, bytes_read);
+	    to_send = my_args->crypt->encrypt(indata, outdata, bytes_read);
 
 	if(my_args->log){
-	    fprintf(logfile, "%d bytes_read: %d\n", my_args->id, bytes_read);
-	    // print_bytes(logfile, outdata, bytes_read);
+	    fprintf(logfile, "%d bytes_read: %d to_send: %d\n", my_args->id, bytes_read, to_send);
 	    fflush(logfile);
 	}
 
 	int ssize = 0;
-	while(ssize < bytes_read) {
-	    if (UDT::ERROR == (ss = UDT::send(*my_args->udt_socket, outdata + ssize, bytes_read - ssize, 0))) {
+	while(ssize < to_send) {
+	    if (UDT::ERROR == (ss = UDT::send(*my_args->udt_socket, outdata + ssize, to_send - ssize, 0))) {
 
 		if(my_args->log) {
 		    fprintf(logfile, "%d send error: %s\n", my_args->id, UDT::getlasterror().getErrorMessage());
 		    fclose(logfile);
 		}
 		my_args->is_complete = true;
+		free(indata);
+		free(outdata);
 		return NULL;
 	    }
 
@@ -222,13 +234,24 @@ void *handle_to_udt(void *threadarg) {
 	}
     }
     my_args->is_complete = true;
+    free(indata);
+    free(outdata);
+    return NULL;
 }
 
 void *udt_to_handle(void *threadarg) {
     struct thread_data *my_args = (struct thread_data *) threadarg;
-    char indata[max_block_size];
-    char outdata[max_block_size];
-    FILE* logfile;
+    char *indata = (char *)malloc(max_block_size);
+    char *outdata = (char *)malloc(max_block_size);
+    FILE* logfile = NULL;
+
+    if (!indata || !outdata) {
+	fprintf(stderr, "[udr] out of memory for transfer buffers\n");
+	free(indata);
+	free(outdata);
+	my_args->is_complete = true;
+	return NULL;
+    }
 
     if(my_args->log) {
 	string filename = my_args->logfile_dir + convert_int(my_args->id) + "_log.txt";
@@ -249,13 +272,15 @@ void *udt_to_handle(void *threadarg) {
 		fclose(logfile);
 	    }
 	    my_args->is_complete = true;
+	    free(indata);
+	    free(outdata);
 	    return NULL;
 	}
 
 	int written_bytes;
 	if(my_args->crypt != NULL) {
-	    my_args->crypt->encrypt(indata, outdata, rs);
-	    written_bytes = write(my_args->fd, outdata, rs);
+	    int dec = my_args->crypt->encrypt(indata, outdata, rs);
+	    written_bytes = write(my_args->fd, outdata, dec);
 	}
 	else {
 	    written_bytes = write(my_args->fd, indata, rs);
@@ -273,10 +298,15 @@ void *udt_to_handle(void *threadarg) {
 		fclose(logfile);
 	    }
 	    my_args->is_complete = true;
+	    free(indata);
+	    free(outdata);
 	    return NULL;
 	}
     }
     my_args->is_complete = true;
+    free(indata);
+    free(outdata);
+    return NULL;
 }
 
 

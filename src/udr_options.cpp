@@ -128,7 +128,7 @@ int get_udr_options(UDR_Options * udr_options, int argc, char * argv[], int rsyn
         {"receiver", no_argument, NULL, 't'},
         {"server", required_argument, NULL, 'd'},
         {"encrypt", optional_argument, NULL, 'n'},
-        {"no-encrypt", no_argument, NULL, 0},
+        {"no-encrypt", no_argument, NULL, 'N'},
         {"sender", no_argument, NULL, 's'},
         {"login-name", required_argument, NULL, 'l'},
         {"keyfile", required_argument, NULL, 'p'},
@@ -146,7 +146,7 @@ int get_udr_options(UDR_Options * udr_options, int argc, char * argv[], int rsyn
 
     int option_index = 0;
 
-    const char* opts = "P:i:tlvxa:b:s:d:h:p:c:k:o:n::";
+    const char* opts = "P:i:tlvxa:b:s:d:h:p:c:k:o:n::N";
 
     while ((ch = getopt_long(rsync_arg_idx, argv, opts, long_options, &option_index)) != -1) {
         switch (ch) {
@@ -165,8 +165,12 @@ int get_udr_options(UDR_Options * udr_options, int argc, char * argv[], int rsyn
         case 't':
             udr_options->tflag = 1;
             break;
+        case 'N':
+            udr_options->encryption = false;
+            break;
         case 'n':
-            // Explicit cipher selection (encryption is on by default)
+            // Prefer --encrypt=aes-256 (attached). Separate "-n aes-256" leaves
+            // aes-256 as a non-option and can break later flag parsing on BSD getopt.
             if (optarg && (strcmp(optarg, "none") == 0 || strcmp(optarg, "off") == 0)) {
                 udr_options->encryption = false;
             } else {

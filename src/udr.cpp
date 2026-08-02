@@ -43,12 +43,12 @@ using namespace std;
 char * get_udr_cmd(UDR_Options * udr_options) {
     char udr_args[PATH_MAX * 2];
     if (udr_options->encryption) {
-        strcpy(udr_args, "-n ");
-        strcat(udr_args, udr_options->encryption_type);
-        strcat(udr_args, " ");
+        // Attached form (--encrypt=aes-256): optional -n args must not be a
+        // separate argv token or getopt treats later flags as non-options.
+        snprintf(udr_args, sizeof(udr_args), "--encrypt=%s ", udr_options->encryption_type);
     }
     else
-        udr_args[0] = '\0';
+        snprintf(udr_args, sizeof(udr_args), "--no-encrypt ");
 
     char delay_args[64];
     snprintf(delay_args, sizeof(delay_args), " -d %d ", udr_options->timeout);
@@ -166,17 +166,36 @@ int main(int argc, char* argv[]) {
                 fprintf(stderr, "UDR ERROR: could not read from key_file %s\n", curr_options.key_filename);
                 exit(EXIT_FAILURE);
             }
-            fgets(hex_pp, HEX_PASSPHRASE_SIZE+1, key_file);
+            // Room for 64 hex digits + newline + NUL
+            if (!fgets(hex_pp, (int)sizeof(hex_pp), key_file)) {
+                fprintf(stderr, "UDR ERROR: could not read key from %s\n",
+                        curr_options.key_filename);
+                exit(EXIT_FAILURE);
+            }
             fclose(key_file);
             remove(curr_options.key_filename);
 
+            // Strip trailing whitespace/newline
+            size_t hexlen = strlen(hex_pp);
+            while (hexlen > 0 && (hex_pp[hexlen - 1] == '\n' || hex_pp[hexlen - 1] == '\r' ||
+                                  hex_pp[hexlen - 1] == ' '))
+                hex_pp[--hexlen] = '\0';
+
+            if (hexlen != (size_t)HEX_PASSPHRASE_SIZE) {
+                fprintf(stderr, "UDR ERROR: bad key length %zu (expected %d hex chars)\n",
+                        hexlen, HEX_PASSPHRASE_SIZE);
+                exit(EXIT_FAILURE);
+            }
+
             unsigned int i;
-            for (i = 0; i < strlen(hex_pp); i = i + 2) {
+            for (i = 0; i < hexlen; i = i + 2) {
                 unsigned int c;
-                sscanf(&hex_pp[i], "%02x", &c);
+                if (sscanf(&hex_pp[i], "%2x", &c) != 1) {
+                    fprintf(stderr, "UDR ERROR: invalid hex in key file\n");
+                    exit(EXIT_FAILURE);
+                }
                 passphrase[i / 2] = (unsigned char) c;
             }
-            passphrase[i / 2] = '\0';
         }
 
         // rsync may pass the peer as a bare hostname, IPv4, IPv6, or [IPv6]
@@ -363,13 +382,11 @@ int main(int argc, char* argv[]) {
 
         char udr_rsync_args1[100];
 
-        if (curr_options.encryption) {
-            strcpy(udr_rsync_args1, "-n ");
-            strcat(udr_rsync_args1, curr_options.encryption_type);
-            strcat(udr_rsync_args1, " ");
-        }
+        if (curr_options.encryption)
+            snprintf(udr_rsync_args1, sizeof(udr_rsync_args1), "--encrypt=%s ",
+                     curr_options.encryption_type);
         else
-            udr_rsync_args1[0] = '\0';
+            snprintf(udr_rsync_args1, sizeof(udr_rsync_args1), "--no-encrypt ");
 
         if (curr_options.verbose)
             strcat(udr_rsync_args1, "-v ");
