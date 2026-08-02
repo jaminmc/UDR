@@ -437,6 +437,58 @@ static int probe_ip_size(int fd, int af, int ip_bytes) {
     return -1;
 }
 
+void apply_udt_performance(UDTSOCKET sock, int udt_buf, int udp_buf, int flight,
+                           int verbose) {
+    if (sock == UDT::INVALID_SOCK)
+        return;
+
+    if (udt_buf < 65536)
+        udt_buf = 65536;
+    if (udp_buf < 65536)
+        udp_buf = 65536;
+
+    // Flight window in packets must be >= UDT recv buffer packet count.
+    // Estimate packets using a conservative ~1400 B payload.
+    int auto_flight = udt_buf / 1400 + 4096;
+    if (auto_flight < 25600)
+        auto_flight = 25600;
+    if (flight < 32)
+        flight = auto_flight;
+
+    if (UDT::ERROR == UDT::setsockopt(sock, 0, UDT_FC, &flight, sizeof(flight))) {
+        if (verbose)
+            fprintf(stderr, "[udr perf] UDT_FC %d failed: %s\n",
+                    flight, UDT::getlasterror().getErrorMessage());
+    }
+
+    if (UDT::ERROR == UDT::setsockopt(sock, 0, UDT_SNDBUF, &udt_buf, sizeof(udt_buf))) {
+        if (verbose)
+            fprintf(stderr, "[udr perf] UDT_SNDBUF %d failed: %s\n",
+                    udt_buf, UDT::getlasterror().getErrorMessage());
+    }
+    if (UDT::ERROR == UDT::setsockopt(sock, 0, UDT_RCVBUF, &udt_buf, sizeof(udt_buf))) {
+        if (verbose)
+            fprintf(stderr, "[udr perf] UDT_RCVBUF %d failed: %s\n",
+                    udt_buf, UDT::getlasterror().getErrorMessage());
+    }
+
+    if (UDT::ERROR == UDT::setsockopt(sock, 0, UDP_SNDBUF, &udp_buf, sizeof(udp_buf))) {
+        if (verbose)
+            fprintf(stderr, "[udr perf] UDP_SNDBUF %d failed: %s\n",
+                    udp_buf, UDT::getlasterror().getErrorMessage());
+    }
+    if (UDT::ERROR == UDT::setsockopt(sock, 0, UDP_RCVBUF, &udp_buf, sizeof(udp_buf))) {
+        if (verbose)
+            fprintf(stderr, "[udr perf] UDP_RCVBUF %d failed: %s\n",
+                    udp_buf, UDT::getlasterror().getErrorMessage());
+    }
+
+    if (verbose) {
+        fprintf(stderr, "[udr perf] UDT_FC=%d UDT_BUF=%d UDP_BUF=%d\n",
+                flight, udt_buf, udp_buf);
+    }
+}
+
 int path_mtu_to_udt_mss(int path_mtu, int af) {
     // UDT: UDP payload (pkt) = MSS - 28
     // on-wire IP size = pkt + IP_hdr + UDP(8) = MSS - 28 + IP_hdr + 8

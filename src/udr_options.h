@@ -60,6 +60,11 @@ struct UDR_Options{
 
     char *specify_ip;
 
+    // High-BDP / WAN performance (bytes). Applied on sender and receiver UDT sockets.
+    int udt_buf_size;   // UDT_SNDBUF / UDT_RCVBUF
+    int udp_buf_size;   // UDP_SNDBUF / UDP_RCVBUF
+    int udt_flight;     // UDT_FC flight window (packets); 0 = auto from udt_buf
+
     uid_t rsync_uid;
     gid_t rsync_gid;
 

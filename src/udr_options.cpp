@@ -20,6 +20,7 @@ and limitations under the License.
 #include <cstdlib>
 #include <cstring>
 #include <stdio.h>
+#include <stdlib.h>
 #include <getopt.h>
 #include "udr_options.h"
 
@@ -38,7 +39,29 @@ void usage() {
     fprintf(stderr, "\t[-b port] Remote UDT port\n");
     fprintf(stderr, "\t[-c path] Remote UDR executable\n");
     fprintf(stderr, "\t[-P ssh-port] Remote port to connect to via SSH\n");
+    fprintf(stderr, "\t[--udt-buf BYTES] UDT send/recv buffer (default 128M; accepts K/M/G suffix)\n");
+    fprintf(stderr, "\t[--udp-buf BYTES] Kernel UDP send/recv buffer (default 16M)\n");
+    fprintf(stderr, "\t[--udt-flight N]  UDT flight window in packets (default: auto)\n");
     exit(1);
+}
+
+// Parse sizes like "128M", "65536", "2G". Returns bytes, or -1 on error.
+static int parse_size_arg(const char *s) {
+    if (!s || !s[0])
+        return -1;
+    char *end = NULL;
+    double v = strtod(s, &end);
+    if (end == s || v < 0)
+        return -1;
+    if (*end == '\0')
+        return (int)v;
+    if ((end[0] == 'K' || end[0] == 'k') && end[1] == '\0')
+        return (int)(v * 1024.0);
+    if ((end[0] == 'M' || end[0] == 'm') && end[1] == '\0')
+        return (int)(v * 1024.0 * 1024.0);
+    if ((end[0] == 'G' || end[0] == 'g') && end[1] == '\0')
+        return (int)(v * 1024.0 * 1024.0 * 1024.0);
+    return -1;
 }
 
 void set_default_udr_options(UDR_Options * options) {
@@ -72,6 +95,12 @@ void set_default_udr_options(UDR_Options * options) {
 
     options->specify_ip = NULL;
 
+    // Defaults sized for multi-hundred-Mbps WAN / high RTT (BDP), not LAN.
+    // Stock UDT uses ~12MB UDT buffers and 64KB UDP send — far too small overseas.
+    options->udt_buf_size = 128 * 1024 * 1024;  // 128 MiB
+    options->udp_buf_size = 16 * 1024 * 1024;   // 16 MiB
+    options->udt_flight = 0;                    // auto from udt_buf
+
     options->rsync_uid = 0;
     options->rsync_gid = 0;
 }
@@ -102,6 +131,9 @@ int get_udr_options(UDR_Options * udr_options, int argc, char * argv[], int rsyn
         {"rsync-uid", required_argument, NULL, 0},
         {"rsync-gid", required_argument, NULL, 0},
         {"config", required_argument, NULL, 0},
+        {"udt-buf", required_argument, NULL, 0},
+        {"udp-buf", required_argument, NULL, 0},
+        {"udt-flight", required_argument, NULL, 0},
         {0, 0, 0, 0}
     };
 
@@ -175,6 +207,29 @@ int get_udr_options(UDR_Options * udr_options, int argc, char * argv[], int rsyn
             }
             else if (strcmp("rsync-gid", long_options[option_index].name) == 0){
                 udr_options->rsync_gid = atoi(optarg);
+            }
+            else if (strcmp("udt-buf", long_options[option_index].name) == 0) {
+                int n = parse_size_arg(optarg);
+                if (n < 65536) {
+                    fprintf(stderr, "UDR ERROR: --udt-buf must be >= 64K\n");
+                    exit(1);
+                }
+                udr_options->udt_buf_size = n;
+            }
+            else if (strcmp("udp-buf", long_options[option_index].name) == 0) {
+                int n = parse_size_arg(optarg);
+                if (n < 65536) {
+                    fprintf(stderr, "UDR ERROR: --udp-buf must be >= 64K\n");
+                    exit(1);
+                }
+                udr_options->udp_buf_size = n;
+            }
+            else if (strcmp("udt-flight", long_options[option_index].name) == 0) {
+                udr_options->udt_flight = atoi(optarg);
+                if (udr_options->udt_flight < 32) {
+                    fprintf(stderr, "UDR ERROR: --udt-flight must be >= 32\n");
+                    exit(1);
+                }
             }
             break;
         default:

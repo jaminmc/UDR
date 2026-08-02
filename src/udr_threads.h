@@ -22,7 +22,8 @@ and limitations under the License.
 #include "crypto.h"
 #include "udr_options.h"
 
-const int max_block_size = 64*1024; //what should this be? maybe based on UDT buffer size?
+// Pipe chunk between rsync fds and UDT — larger helps high-BDP flows.
+const int max_block_size = 256 * 1024;
 
 typedef struct timeout_mon_args{
     FILE * logfile;

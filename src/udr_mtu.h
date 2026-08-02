@@ -30,4 +30,10 @@ int apply_udt_mss_for_peer(UDTSOCKET sock, const struct sockaddr *peer,
 int apply_udt_mss_for_listener(UDTSOCKET sock, int af, const char *bind_ip,
                                int verbose);
 
+// Raise UDT/UDP buffers and flight window for high bandwidth-delay product.
+// Call after UDT_MSS is set, before connect/bind. Values are in bytes
+// (udt_buf/udp_buf) and packets (flight; 0 = derive from udt_buf).
+void apply_udt_performance(UDTSOCKET sock, int udt_buf, int udp_buf, int flight,
+                           int verbose);
+
 #endif

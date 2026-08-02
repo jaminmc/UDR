@@ -24,6 +24,7 @@ and limitations under the License.
 #include <limits.h>
 #include <signal.h>
 #include <getopt.h>
+#include <arpa/inet.h>
 
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -40,7 +41,7 @@ and limitations under the License.
 using namespace std;
 
 char * get_udr_cmd(UDR_Options * udr_options) {
-    char udr_args[PATH_MAX];
+    char udr_args[PATH_MAX * 2];
     if (udr_options->encryption) {
         strcpy(udr_args, "-n ");
         strcat(udr_args, udr_options->encryption_type);
@@ -49,17 +50,33 @@ char * get_udr_cmd(UDR_Options * udr_options) {
     else
         udr_args[0] = '\0';
 
-    char delay_args[PATH_MAX];
-    sprintf(delay_args, " -d %d ", udr_options->timeout);
+    char delay_args[64];
+    snprintf(delay_args, sizeof(delay_args), " -d %d ", udr_options->timeout);
     strcat(udr_args, delay_args);
 
     if (udr_options->verbose)
         strcat(udr_args, "-v");
 
     if (udr_options->specify_ip){
-	char specify_ip_arg[PATH_MAX];
-	sprintf(specify_ip_arg, " -i%s", udr_options->specify_ip);
+	// Space form so IPv6 literals (with colons) parse cleanly via getopt
+	char specify_ip_arg[PATH_MAX + 8];
+	snprintf(specify_ip_arg, sizeof(specify_ip_arg), " -i %s", udr_options->specify_ip);
 	strcat(udr_args, specify_ip_arg);
+    }
+
+    // Mirror buffer settings on the remote receiver (must match for high BDP)
+    {
+	char perf_args[128];
+	if (udr_options->udt_flight > 0)
+	    snprintf(perf_args, sizeof(perf_args),
+		     " --udt-buf %d --udp-buf %d --udt-flight %d",
+		     udr_options->udt_buf_size, udr_options->udp_buf_size,
+		     udr_options->udt_flight);
+	else
+	    snprintf(perf_args, sizeof(perf_args),
+		     " --udt-buf %d --udp-buf %d",
+		     udr_options->udt_buf_size, udr_options->udp_buf_size);
+	strcat(udr_args, perf_args);
     }
 
     if (udr_options->server_connect) {
@@ -77,6 +94,19 @@ char * get_udr_cmd(UDR_Options * udr_options) {
 
 void print_version() {
     fprintf(stderr, "UDR version %s\n", version);
+}
+
+// True if s is a numeric IPv4 or IPv6 address (not a hostname).
+static int host_is_ip_literal(const char *s) {
+    if (!s || !s[0])
+        return 0;
+    struct in_addr a4;
+    struct in6_addr a6;
+    if (inet_pton(AF_INET, s, &a4) == 1)
+        return 1;
+    if (inet_pton(AF_INET6, s, &a6) == 1)
+        return 1;
+    return 0;
 }
 
 //only going to go from local -> remote and remote -> local, remote <-> remote maybe later, but local -> local doesn't make sense for UDR
@@ -190,6 +220,17 @@ int main(int argc, char* argv[]) {
         //get the host and username first
         get_host_username(&curr_options, argc, argv, rsync_arg_idx);
 
+        // When the peer is a raw IP (esp. IPv6), bind the remote receiver to
+        // that same address. Binding :: causes macOS to reply from a privacy
+        // temporary address, so the UDT handshake never matches the peer the
+        // sender connected to (visible in tcpdump as a4d vs 2c3d mismatch).
+        if (!curr_options.specify_ip && host_is_ip_literal(curr_options.host)) {
+            curr_options.specify_ip = strdup(curr_options.host);
+            if (curr_options.verbose)
+                fprintf(stderr, "%s Auto -i %s (bind remote UDT to peer IP)\n",
+                        curr_options.which_process, curr_options.specify_ip);
+        }
+
 	char * udr_cmd = get_udr_cmd(&curr_options);
         if (curr_options.verbose){
             fprintf(stderr, "%s udr_cmd %s\n", curr_options.which_process, udr_cmd);
@@ -262,13 +303,16 @@ int main(int argc, char* argv[]) {
 
             if (nbytes <= 0) {
                 fprintf(stderr, "UDR ERROR: unexpected response from server, exiting.\n");
+                fprintf(stderr, "UDR HINT: on the remote host try: pkill -f 'udr.*-t rsync'  then retry\n");
                 exit(EXIT_FAILURE);
             }
         }
         /* Now do the exact same thing no matter whether server or ssh process */
 
-        if (strlen(line) == 0) {
-            fprintf(stderr, "UDR ERROR: unexpected response from server, exiting.\n");
+        if (strlen(line) == 0 || strncmp(line, "ERROR", 5) == 0) {
+            fprintf(stderr, "UDR ERROR: unexpected response from server: '%s'\n", line);
+            fprintf(stderr, "UDR HINT: remote could not bind a UDP port (often leftover udr).\n");
+            fprintf(stderr, "UDR HINT: on remote: pkill -f 'udr.*-t rsync' ; lsof -nP -iUDP:9000-9100\n");
             exit(EXIT_FAILURE);
         }
 

@@ -104,8 +104,30 @@ udr [udr options] rsync [rsync options] src dest
 - `[-d timeout]` idle timeout in seconds after connect with no data (default 15)
 - `[-i ip]` interface address the remote process binds to (IPv4 or IPv6)
 - `[-P ssh-port]` SSH port (default 22)
+- `[--udt-buf SIZE]` UDT send/recv buffer (default **128M**; `K`/`M`/`G` suffix ok)
+- `[--udp-buf SIZE]` kernel UDP send/recv buffer (default **16M**)
+- `[--udt-flight N]` UDT flight window in packets (default: auto from `--udt-buf`)
 
 Do **not** pass rsync’s `-e` / `--rsh`; UDR supplies that itself.
+
+### Throughput on long paths
+
+Defaults are raised for high bandwidth-delay product (stock UDT used ~12 MB UDT buffers and 64 KB UDP send). Both ends need this build so remote gets the same buffer flags via SSH.
+
+Optional push further:
+
+```bash
+udr -v --udt-buf 256M --udp-buf 32M -c /usr/local/bin/udr rsync -avh --progress ...
+```
+
+On **Linux** (Finland), raise socket caps so 16–32 M UDP buffers can actually attach:
+
+```bash
+sudo sysctl -w net.core.rmem_max=268435456 net.core.wmem_max=268435456
+sudo sysctl -w net.core.rmem_default=16777216 net.core.wmem_default=16777216
+```
+
+Disk speed on the destination volume also caps rsync; `iostat`/`fs_usage` if you stall below line rate.
 
 ### Examples
 
@@ -128,6 +150,8 @@ udr -c /home/user/udr/src/udr -a 8000 -b 8010 rsync -av --stats --progress \
 udr -v rsync -av --progress /local/path/ \
   'user@[2001:db8::1]:/remote/path/'
 ```
+
+**IPv6 privacy addresses (macOS):** The remote receiver auto-binds to the address from `SSH_CONNECTION` (the address you connected to), so replies use the same source as the peer expects. No `-i` flag needed. Manual override is still available: `-i <addr>`.
 
 ### Path MTU / packet size
 

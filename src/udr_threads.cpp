@@ -25,12 +25,15 @@ and limitations under the License.
 #include <syslog.h>
 #include <sys/types.h>
 #include <glob.h>
+#include <string.h>
+#include <stdlib.h>
 #include <udt.h>
 #include "udr_util.h"
 #include "udr_mtu.h"
 #include "udr_threads.h"
 
 #include <arpa/inet.h>
+#include <netinet/in.h>
 
 #include <sys/types.h>
 #include <sys/stat.h>
@@ -278,6 +281,55 @@ static void host_without_brackets(const char *in, char *out, size_t outsz) {
     }
 }
 
+// SSH sets SSH_CONNECTION="client_ip client_port server_ip server_port".
+// server_ip is the address the peer used to reach us — bind UDT there so
+// replies use the same source (macOS privacy/temporary IPv6 otherwise breaks UDT).
+// Returns heap string (caller frees) or NULL.
+static char *bind_ip_from_ssh_connection(void) {
+    const char *env = getenv("SSH_CONNECTION");
+    if (!env || !env[0])
+	return NULL;
+
+    char *copy = strdup(env);
+    if (!copy)
+	return NULL;
+
+    char *save = NULL;
+    char *tok;
+    int idx = 0;
+    char *server_ip = NULL;
+    for (tok = strtok_r(copy, " \t", &save); tok != NULL;
+	 tok = strtok_r(NULL, " \t", &save), idx++) {
+	if (idx == 2) {
+	    server_ip = strdup(tok);
+	    break;
+	}
+    }
+    free(copy);
+    return server_ip;
+}
+
+// Prefer stable/public IPv6 source over privacy temporary addresses when
+// bound to :: (best-effort; not available on every OS).
+static void prefer_public_ipv6_src(int udpsock) {
+#if defined(IPV6_PREFER_TEMPADDR)
+    int prefer_temp = 0;
+    (void)setsockopt(udpsock, IPPROTO_IPV6, IPV6_PREFER_TEMPADDR,
+		     (char *)&prefer_temp, sizeof(prefer_temp));
+#elif defined(__APPLE__)
+    // macOS value when header feature-macro hides the name
+    int prefer_temp = 0;
+    (void)setsockopt(udpsock, IPPROTO_IPV6, 63,
+		     (char *)&prefer_temp, sizeof(prefer_temp));
+#endif
+#if defined(IPV6_ADDR_PREFERENCES) && defined(IPV6_PREFER_SRC_PUBLIC)
+    int pref = IPV6_PREFER_SRC_PUBLIC;
+    (void)setsockopt(udpsock, IPPROTO_IPV6, IPV6_ADDR_PREFERENCES,
+		     (char *)&pref, sizeof(pref));
+#endif
+    (void)udpsock;
+}
+
 int run_sender(UDR_Options * udr_options, unsigned char * passphrase, const char* cmd, int argc, char ** argv) {
     UDT::startup();
     struct addrinfo hints, *peer, *p;
@@ -306,6 +358,8 @@ int run_sender(UDR_Options * udr_options, unsigned char * passphrase, const char
 
 	(void)apply_udt_mss_for_peer(s, p->ai_addr, p->ai_addrlen,
 				     udr_options->verbose ? 1 : 0);
+	apply_udt_performance(s, udr_options->udt_buf_size, udr_options->udp_buf_size,
+			      udr_options->udt_flight, udr_options->verbose ? 1 : 0);
 
 	if (UDT::ERROR == UDT::connect(s, p->ai_addr, p->ai_addrlen)) {
 	    if (udr_options->verbose) {
@@ -423,6 +477,19 @@ int run_receiver(UDR_Options * udr_options) {
     addrinfo* res;
     addrinfo* aip;
 
+    // Auto-bind to the address the SSH client used (no -i required).
+    // Fixes macOS IPv6 temporary-address reply mismatch without client flags.
+    char *ssh_bind_ip = NULL;
+    if (!udr_options->specify_ip) {
+	ssh_bind_ip = bind_ip_from_ssh_connection();
+	if (ssh_bind_ip) {
+	    udr_options->specify_ip = ssh_bind_ip;
+	    if (udr_options->verbose)
+		fprintf(stderr, "[udr receiver] auto-bind from SSH_CONNECTION: %s\n",
+			ssh_bind_ip);
+	}
+    }
+
     // switch to turn on ip specification or not
     int specify_ip = !!(udr_options->specify_ip);
 
@@ -451,19 +518,20 @@ int run_receiver(UDR_Options * udr_options) {
 	snprintf(receiver_port, sizeof(receiver_port), "%d", port_num);
 
 	if (specify_ip) {
-	    // Bind to a specific IPv4 or IPv6 address
+	    // Bind to a specific IPv4 or IPv6 address so replies use the same
+	    // source the peer connected to (critical for IPv6 privacy addrs).
 	    struct addrinfo sip_hints, *sip_res, *sip;
 	    memset(&sip_hints, 0, sizeof(sip_hints));
 	    sip_hints.ai_family = AF_UNSPEC;
 	    sip_hints.ai_socktype = SOCK_STREAM;
-	    sip_hints.ai_flags = AI_PASSIVE | AI_NUMERICHOST;
+	    sip_hints.ai_flags = AI_NUMERICHOST;
 
 	    char ip_buf[PATH_MAX + 1];
 	    host_without_brackets(udr_options->specify_ip, ip_buf, sizeof(ip_buf));
 
 	    if (0 != getaddrinfo(ip_buf, receiver_port, &sip_hints, &sip_res)) {
-		// Retry without AI_NUMERICHOST for hostnames
-		sip_hints.ai_flags = AI_PASSIVE;
+		// Retry without AI_NUMERICHOST for hostnames / interface names
+		sip_hints.ai_flags = 0;
 		if (0 != getaddrinfo(ip_buf, receiver_port, &sip_hints, &sip_res)) {
 		    if (udr_options->verbose)
 			fprintf(stderr, "[udr receiver] getaddrinfo(%s) failed\n", ip_buf);
@@ -476,15 +544,27 @@ int run_receiver(UDR_Options * udr_options) {
 		if (s == UDT::INVALID_SOCK)
 		    continue;
 
+		bool reuse = true;
+		UDT::setsockopt(s, 0, UDT_REUSEADDR, &reuse, sizeof(reuse));
 		(void)apply_udt_mss_for_listener(s, sip->ai_family, ip_buf,
 						 udr_options->verbose ? 1 : 0);
+		apply_udt_performance(s, udr_options->udt_buf_size,
+				      udr_options->udp_buf_size,
+				      udr_options->udt_flight,
+				      udr_options->verbose ? 1 : 0);
 
 		if (UDT::ERROR == UDT::bind(s, sip->ai_addr, sip->ai_addrlen)) {
+		    if (udr_options->verbose)
+			fprintf(stderr, "[udr receiver] bind %s port %s failed: %s\n",
+				ip_buf, receiver_port, UDT::getlasterror().getErrorMessage());
 		    UDT::close(s);
 		    continue;
 		}
 		serv = s;
 		bad_port = false;
+		if (udr_options->verbose)
+		    fprintf(stderr, "[udr receiver] bound %s port %s (specific IP)\n",
+			    ip_buf, receiver_port);
 		break;
 	    }
 	    freeaddrinfo(sip_res);
@@ -493,9 +573,12 @@ int run_receiver(UDR_Options * udr_options) {
 	    // Fall back to plain IPv6, then IPv4.
 	    int udpsock = socket(AF_INET6, SOCK_DGRAM, 0);
 	    if (udpsock >= 0) {
+		int on = 1;
 		int off = 0;
+		(void)setsockopt(udpsock, SOL_SOCKET, SO_REUSEADDR, (char *)&on, sizeof(on));
 		// Best-effort dual-stack; ignore failure (some OSes disallow it)
 		(void)setsockopt(udpsock, IPPROTO_IPV6, IPV6_V6ONLY, (char *)&off, sizeof(off));
+		prefer_public_ipv6_src(udpsock);
 
 		struct sockaddr_in6 addr6;
 		memset(&addr6, 0, sizeof(addr6));
@@ -506,8 +589,14 @@ int run_receiver(UDR_Options * udr_options) {
 		if (0 == ::bind(udpsock, (struct sockaddr *)&addr6, sizeof(addr6))) {
 		    UDTSOCKET s = UDT::socket(AF_INET6, SOCK_STREAM, 0);
 		    if (s != UDT::INVALID_SOCK) {
+			bool reuse = true;
+			UDT::setsockopt(s, 0, UDT_REUSEADDR, &reuse, sizeof(reuse));
 			(void)apply_udt_mss_for_listener(s, AF_INET6, NULL,
 							 udr_options->verbose ? 1 : 0);
+			apply_udt_performance(s, udr_options->udt_buf_size,
+					      udr_options->udp_buf_size,
+					      udr_options->udt_flight,
+					      udr_options->verbose ? 1 : 0);
 			if (UDT::ERROR != UDT::bind(s, udpsock)) {
 			    serv = s;
 			    bad_port = false;
@@ -516,9 +605,15 @@ int run_receiver(UDR_Options * udr_options) {
 			    if (udr_options->verbose)
 				fprintf(stderr, "[udr receiver] bound dual-stack IPv6 port %s\n", receiver_port);
 			} else {
+			    if (udr_options->verbose)
+				fprintf(stderr, "[udr receiver] dual-stack UDT bind port %s failed: %s\n",
+					receiver_port, UDT::getlasterror().getErrorMessage());
 			    UDT::close(s);
 			}
 		    }
+		} else if (udr_options->verbose && errno == EADDRINUSE) {
+		    fprintf(stderr, "[udr receiver] port %s already in use, trying next\n",
+			    receiver_port);
 		}
 		if (udpsock >= 0)
 		    close(udpsock);
@@ -531,8 +626,14 @@ int run_receiver(UDR_Options * udr_options) {
 		    if (s == UDT::INVALID_SOCK)
 			continue;
 
+		    bool reuse = true;
+		    UDT::setsockopt(s, 0, UDT_REUSEADDR, &reuse, sizeof(reuse));
 		    (void)apply_udt_mss_for_listener(s, aip->ai_family, NULL,
 						     udr_options->verbose ? 1 : 0);
+		    apply_udt_performance(s, udr_options->udt_buf_size,
+					  udr_options->udp_buf_size,
+					  udr_options->udt_flight,
+					  udr_options->verbose ? 1 : 0);
 
 		    if (UDT::ERROR == UDT::bind(s, aip->ai_addr, aip->ai_addrlen)) {
 			if (udr_options->verbose) {
@@ -562,6 +663,10 @@ int run_receiver(UDR_Options * udr_options) {
 
     if(bad_port){
 	fprintf(stderr, "[udr receiver] ERROR: could not bind to any port in range %d - %d\n", udr_options->start_port, udr_options->end_port);
+	fprintf(stderr, "[udr receiver] HINT: kill leftover receivers: pkill -f 'udr.*-t rsync'\n");
+	// Also write to stdout so the SSH client does not just see an empty line
+	printf("ERROR bind-failed %d-%d\n", udr_options->start_port, udr_options->end_port);
+	fflush(stdout);
 	return 0;
     }
 
@@ -586,14 +691,50 @@ int run_receiver(UDR_Options * udr_options) {
 	return 0;
     }
 
+    // Timed accept so we notice when the SSH parent exits (avoids zombie
+    // listeners holding UDP ports after a failed transfer).
+    {
+	int rcv_ms = 1000; // 1s
+	UDT::setsockopt(serv, 0, UDT_RCVTIMEO, &rcv_ms, sizeof(rcv_ms));
+    }
+
     sockaddr_storage clientaddr;
     int addrlen = sizeof(clientaddr);
 
-    UDTSOCKET recver;
+    UDTSOCKET recver = UDT::INVALID_SOCK;
+    while (true) {
+	addrlen = sizeof(clientaddr);
+	recver = UDT::accept(serv, (sockaddr *)&clientaddr, &addrlen);
+	if (recver != UDT::INVALID_SOCK)
+	    break;
 
-    if (UDT::INVALID_SOCK == (recver = UDT::accept(serv, (sockaddr*)&clientaddr, &addrlen))) {
-	fprintf(stderr, "[udr receiver] accept: %s\n", UDT::getlasterror().getErrorMessage());
-	return 0;
+	// Parent SSH session gone → exit and free the port
+	if (getppid() != orig_ppid) {
+	    if (udr_options->verbose)
+		fprintf(stderr, "[udr receiver] SSH parent exited while waiting for UDT connect; shutting down\n");
+	    UDT::close(serv);
+	    UDT::cleanup();
+	    return 0;
+	}
+
+	// Other errors (not timeout): give up
+	int err = UDT::getlasterror().getErrorCode();
+	// 6002 is typically timeout in UDT; keep waiting for those
+	if (err != 6002 && err != 0) {
+	    const char *msg = UDT::getlasterror().getErrorMessage();
+	    if (msg && strstr(msg, "timed out") == NULL && strstr(msg, "Timeout") == NULL) {
+		fprintf(stderr, "[udr receiver] accept: %s\n", msg);
+		UDT::close(serv);
+		return 0;
+	    }
+	}
+    }
+
+    // Blocking I/O for the rest of the transfer
+    {
+	int rcv_ms = -1;
+	UDT::setsockopt(serv, 0, UDT_RCVTIMEO, &rcv_ms, sizeof(rcv_ms));
+	UDT::setsockopt(recver, 0, UDT_RCVTIMEO, &rcv_ms, sizeof(rcv_ms));
     }
 
     char clienthost[NI_MAXHOST];
