@@ -55,11 +55,22 @@ pid_t fork_execvp(const char *program, char* argv[], int * ptc, int * ctp){
     pid = fork();
 
     if(pid == 0){
-	//child
+	// child
 	close(parent_to_child[1]);
 	dup2(parent_to_child[0], 0);
+	close(parent_to_child[0]);
 	close(child_to_parent[0]);
 	dup2(child_to_parent[1], 1);
+	close(child_to_parent[1]);
+
+	// Drop inherited FDs (especially UDT's UDP socket). Without this,
+	// a long-lived rsync child keeps UDP 9000 open after udr exits
+	// ("Address already in use" on the next transfer).
+	int maxfd = (int)sysconf(_SC_OPEN_MAX);
+	if (maxfd < 0 || maxfd > 4096)
+	    maxfd = 1024;
+	for (int fd = 3; fd < maxfd; fd++)
+	    close(fd);
 
 	execvp(program, argv);
 	perror(program);
