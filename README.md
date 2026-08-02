@@ -101,7 +101,7 @@ udr [udr options] rsync [rsync options] src dest
 - `[-o server port]` port for UDR server mode (default 9000)
 - `[-v]` verbose mode (includes MTU discovery logs)
 - `[--version]` print version
-- `[-d timeout]` idle timeout in seconds after connect with no data (default 15)
+- `[-d timeout]` idle timeout in seconds with no rsync/UDT pipe data (default **600**; use `0` to disable). Needs to be large for `--partial` / `--inplace` resume on big files.
 - `[-i ip]` interface address the remote process binds to (IPv4 or IPv6)
 - `[-P ssh-port]` SSH port (default 22)
 - `[--udt-buf SIZE]` UDT send/recv buffer (default **128M**; `K`/`M`/`G` suffix ok)

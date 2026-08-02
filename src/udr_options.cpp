@@ -34,7 +34,7 @@ void usage() {
     fprintf(stderr, "UDR options:\n");
     fprintf(stderr, "\t[-n aes-128 | aes-192 | aes-256 | bf | des-ede3] Encryption cypher\n");
     fprintf(stderr, "\t[-v] Run UDR with verbosity\n");
-    fprintf(stderr, "\t[-d timeout] Data transfer timeout in seconds\n");
+    fprintf(stderr, "\t[-d timeout] Idle timeout seconds with no pipe data (default 600; 0=disable)\n");
     fprintf(stderr, "\t[-a port] Local UDT port\n");
     fprintf(stderr, "\t[-b port] Remote UDT port\n");
     fprintf(stderr, "\t[-c path] Remote UDR executable\n");
@@ -68,7 +68,10 @@ void set_default_udr_options(UDR_Options * options) {
     options->ssh_port = 22;
     options->start_port = 9000;
     options->end_port = 9100;
-    options->timeout = 15;
+    // Idle gap with no UDT/rsync pipe traffic before the receiver aborts.
+    // 15s is too short for --partial/--inplace resume on large files (rsync
+    // can think for minutes while checking existing data).
+    options->timeout = 600;
 
     options->tflag = false;
     options->sflag = false;

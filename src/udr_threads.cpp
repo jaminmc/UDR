@@ -48,30 +48,43 @@ bool thread_log = false;
 //for debugging
 string local_logfile_dir = "../log";
 
-// Ever TRANSFER_TIMEOUT interval, check to see if data has been exchanged
-// if timeout_sem = 1 then data has been exchanged
-// if timeout_sem = 2 then data has not been exchanged but
-//     the connection has not been established so don't exit
+// Every TRANSFER_TIMEOUT interval, check whether data has been exchanged.
+//   timeout_sem = 1  → data seen since last arm
+//   timeout_sem = 2  → not fully connected yet (do not time out)
+//   timeout_sem = 0  → idle since last arm
+// Require two consecutive idle intervals before killing so a single long
+// rsync "thinking" phase (file list / --inplace resume) does not abort.
 int timeout_sem;
 void *monitor_timeout(void* _arg) {
 
     timeout_mon_args *args = (timeout_mon_args*) _arg;
     FILE* logfile = args->logfile;
+    int idle_strikes = 0;
+
+    // timeout <= 0 disables the idle killer entirely
+    if (args->timeout <= 0) {
+	while (1)
+	    sleep(3600);
+    }
 
     while (1){
 
 	sleep(args->timeout);
 
 	if (timeout_sem == 0){
-
-	    if (logfile) {
-	    	fprintf(logfile, "Data transfer timeout. Exiting\n");
-	    	fclose(logfile);
+	    idle_strikes++;
+	    if (idle_strikes >= 2) {
+		if (logfile) {
+		    fprintf(logfile, "Data transfer timeout (%d s idle x%d). Exiting\n",
+			    args->timeout, idle_strikes);
+		    fclose(logfile);
+		}
+		fprintf(stderr, "[udr] idle timeout: no data for ~%d seconds, exiting\n",
+			args->timeout * idle_strikes);
+		exit(1);
 	    }
-	    exit(1);
-
 	} else {
-	    // continue on as normal
+	    idle_strikes = 0;
 	}
 
 	// If timeout_sem == 2, the connection has not been made -> no timeout next round
